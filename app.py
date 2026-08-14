@@ -4041,7 +4041,8 @@ SAVE_ITEMS = (
     ('txt',   '계산서(텍스트)', '.txt',   True,  '화면의 계산서 그대로'),
     ('xlsx',  '계산서(엑셀)',   '.xlsx',  True,  '부재별·부재군·셀·검산 4 시트'),
     ('dxf2d', '도면',           '.dxf',   True,  '평면도·정면도·측면도 (CAD)'),
-    ('dxf3d', '3D모델',         '.dxf',   True,  '3차원 형상 메시 (CAD)'),
+    ('dxf3d', '3D모델',         '.dxf',   True,
+     '3차원 형상 (부재 124 개 전부 닫힌 다면체) + 솔리드 변환 스크립트'),
     ('png',   '도해',           '.png',   True,  '3D·평면·정면·측면 이미지 4 장'),
 )
 SAVE_ITEM = {k: (nm, ext, need) for k, nm, ext, need, _d in SAVE_ITEMS}
@@ -4688,6 +4689,8 @@ def save_targets(key, name):
     it = SAVE_ITEM[key]
     if key == 'png':
         return [f"{name}_{it[0]}_{sfx}{it[1]}" for _k, sfx in FIG_SUFFIX]
+    if key == 'dxf3d':
+        return [f"{name}_{it[0]}{it[1]}", f"{name}_솔리드변환.scr"]
     return [f"{name}_{it[0]}{it[1]}"]
 
 
@@ -4789,15 +4792,34 @@ def write_dxf2d_bytes():
     return [data], f"평면·정면·측면 3 도면, 레이어 {len(layers)} 개 (단위 m)"
 
 
+#: [CAD] 부재 하나하나가 이미 빈틈 없이 닫힌 다면체(watertight closed mesh)
+#: 라서, AutoCAD 내장 CONVTOSOLID 명령 한 번이면 폴리페이스 메시 그대로
+#: 참(ACIS) 3D 솔리드가 된다 — 이 프로그램은 ACIS 커널이 없어 솔리드를 직접
+#: 쓸 수 없으므로, 그 명령을 대신 눌러 주는 스크립트를 DXF 와 함께 준다.
+CONVTOSOLID_SCR = (
+    "; 케이슨 3D DXF - 전체 부재를 솔리드로 일괄 변환\n"
+    "; AutoCAD 에서 : 이 DXF 를 연 채로 SCR 명령 -> 이 파일 선택\n"
+    "_.CONVTOSOLID\n"
+    "_ALL\n"
+    "\n"
+    "_.ZOOM\n"
+    "_E\n"
+)
+
+
 def write_dxf3d_bytes():
     ex = Dxf3DExporter(SS['eng']).build()
     data, layers = _dxf_to_bytes(ex.save)
     SS['last3d_text'] = ex.reconcile_text()
     nf = sum(len(m.faces) for m in ex.meshes)
     rc = ex.reconcile()
-    return [data], (f"부재 {len(ex.meshes)} 개 · 면 {nf:,} 개 · "
-                    f"레이어 {len(layers)} 개  "
-                    f"[체적 대조 {'O.K' if rc['ok'] else '★ N.G'}]")
+    bad = ex.problems()             # 닫히지 않은 부재가 있으면 솔리드 변환이 실패한다
+    solid_ok = not bad
+    scr = CONVTOSOLID_SCR.encode('cp949', errors='replace')
+    note = (f"부재 {len(ex.meshes)} 개 · 면 {nf:,} 개 · 레이어 {len(layers)} 개  "
+           f"[체적 대조 {'O.K' if rc['ok'] else '★ N.G'}]"
+           f"  [솔리드 변환 {'가능' if solid_ok else f'★ {len(bad)}개 부재 확인 필요'}]")
+    return [data, scr], note
 
 
 def write_png_bytes():
@@ -5367,7 +5389,8 @@ with TABS[7]:
             "※ 축척은 항상 전체 형상 기준으로 고정되므로 부재군을 꺼도 뷰끼리 대조할 "
             "수 있다. 3D 가 느리면 [헌치] 를 끄십시오.　[9. 저장] 에서 [도면] 은 "
             "평면도·정면도·측면도를 CAD 도면(레이어 분리)으로, [3D모델] 은 3차원 "
-            "형상을 CAD 메시로, [도해] 는 이 화면 4 장을 이미지로 내보낸다.")
+            "형상(부재별로 이미 닫힌 다면체)과 그것을 AutoCAD 참 솔리드로 "
+            "바꿔 주는 스크립트를, [도해] 는 이 화면 4 장을 이미지로 내보낸다.")
 
         _figs = build_figs()
         _view = st.radio("보기", ["3D 형상", "평면도", "정면도", "측면도"],
